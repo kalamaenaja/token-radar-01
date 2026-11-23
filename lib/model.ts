@@ -1,4 +1,4 @@
-// Token Radar model (radar-2): one sealed snapshot in, one ranked board out.
+// Token Radar model (radar-3): one sealed snapshot in, one ranked board out.
 //
 // The board ranks only genuine pre-token candidates. A protocol counts as a candidate when its
 // DefiLlama record carries no token at all (no market cap, no CoinGecko id, no symbol) AND it is
@@ -11,7 +11,10 @@
 //
 // Implied value follows only from the snapshot's own figures, the same function for every row:
 //
-//   base        = tvl_usd x BASE_MULTIPLE
+//   multiple    = the category's median market-cap/TVL among the snapshot's live protocols
+//                 (5 or more live in the category; otherwise the whole-market median 0.169),
+//                 clamped to 0.05..0.70: the market's own pricing of the same kind of token
+//   base        = tvl_usd x multiple
 //   growth      = clamp(change_7d, -80, 150) per cent
 //   growthMult  = 1 + (growth / 100) x GROWTH_WEIGHT
 //   age         = days from listed_at to as_of (unknown: 180)
@@ -19,8 +22,11 @@
 //   breadth     = 1 + 0.04 x min(chains - 1, 5)
 //   implied     = max(1, round(base x growthMult x maturity x breadth))
 //
-// No protocol name is ever special-cased. The dashboard's model sandbox re-runs this same
-// function in the page when a reader moves a slider, so the board is a model, not a list.
+// A flat multiple would price a lending token like a DEX token; the market does not. The median
+// is used because a few live records carry a market cap far above their TVL (one at 400x), and a
+// median is unmoved by them. No protocol name is ever special-cased. The dashboard's model
+// sandbox re-runs this same function in the page when a reader moves a slider, so the board is a
+// model, not a list.
 
 /** One protocol entry of the sealed snapshot: exactly its ten fields. */
 export interface SnapshotProtocol {
@@ -47,7 +53,6 @@ export interface Snapshot {
 
 /** The model's constants, as the dashboard states them and the sandbox may change them. */
 export interface ModelConstants {
-  base_multiple: number;
   growth_weight: number;
   growth_floor: number;
   growth_cap: number;
@@ -57,10 +62,15 @@ export interface ModelConstants {
   unknown_age_days: number;
   breadth_step: number;
   breadth_max_steps: number;
+  /** The sandbox's scale on the calibrated multiple: 1 is the market's own pricing. */
+  market_scale: number;
+  /** Live protocols a category needs before its own median is used instead of the market's. */
+  calibration_min_live: number;
+  calibration_floor: number;
+  calibration_cap: number;
 }
 
 export const MODEL: ModelConstants = {
-  base_multiple: 0.3,
   growth_weight: 0.6,
   growth_floor: -80,
   growth_cap: 150,
@@ -70,10 +80,14 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 180,
   breadth_step: 0.04,
   breadth_max_steps: 5,
+  market_scale: 1,
+  calibration_min_live: 5,
+  calibration_floor: 0.05,
+  calibration_cap: 0.7,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the "already trading" view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -103,6 +117,7 @@ export interface BoardRow {
   implied_value_usd: number;
   model: {
     base_multiple: number;
+    base_source: string;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -125,6 +140,8 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  base_multiple: number;
+  base_source: string;
   growth_multiplier: number;
   maturity_multiplier: number;
   breadth_multiplier: number;
@@ -143,6 +160,23 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** One calibrated category: its median market-cap/TVL and how many live protocols set it. */
+export interface CalibrationRow {
+  category: string;
+  live_count: number;
+  multiple: number;
+}
+
+/** The whole calibration, derived from the snapshot's live protocols: what the dashboard shows. */
+export interface Calibration {
+  global_multiple: number;
+  global_live_count: number;
+  min_live: number;
+  floor: number;
+  cap: number;
+  by_category: CalibrationRow[];
+}
+
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -150,6 +184,7 @@ export interface RadarData {
   floor_usd: number;
   model: ModelConstants;
   model_version: string;
+  calibration: Calibration;
   watchlist_size: number;
   board_size: number;
   live_size: number;
@@ -182,12 +217,73 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
+/** Categories that move value between chains instead of carrying a token of their own. */
+const BRIDGE_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Cross Chain Bridge']);
+
+/** The middle of a sorted list (the lower middle when its length is even): a median. */
+function median(sorted: number[]): number {
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+const round3 = (n: number): number => Math.round(n * 1e3) / 1e3;
+
+/**
+ * The base multiples, calibrated from the snapshot's own live protocols: every protocol with a
+ * market cap and a CoinGecko id, not a CEX and not a bridge (a bridge's market cap is the bridged
+ * asset's, not its own token's). A category with at least `calibration_min_live` live protocols
+ * gets its own median market-cap/TVL; every other category uses the whole-market median. Both are
+ * clamped to the model's floor and cap, so no single outlier can set a multiple.
+ */
+export function calibrateMultiples(snapshot: Snapshot, model: ModelConstants): Calibration {
+  const live = snapshot.protocols.filter(
+    (p) =>
+      p.mcap_usd !== null &&
+      p.gecko_id !== null &&
+      p.tvl_usd > 0 &&
+      p.category !== 'CEX' &&
+      !BRIDGE_CATEGORIES.has(p.category ?? ''),
+  );
+  const global = median(live.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b));
+  const globalMultiple = round3(Math.min(model.calibration_cap, Math.max(model.calibration_floor, global)));
+  const byCategory = new Map<string, number[]>();
+  for (const p of live) {
+    const list = byCategory.get(p.category ?? 'n/a');
+    if (list === undefined) byCategory.set(p.category ?? 'n/a', [p.mcap_usd! / p.tvl_usd]);
+    else list.push(p.mcap_usd! / p.tvl_usd);
+  }
+  const rows: CalibrationRow[] = [];
+  for (const [category, ratios] of [...byCategory.entries()].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1))) {
+    if (ratios.length < model.calibration_min_live) continue;
+    rows.push({
+      category,
+      live_count: ratios.length,
+      multiple: round3(Math.min(model.calibration_cap, Math.max(model.calibration_floor, median(ratios.sort((a, b) => a - b))))),
+    });
+  }
+  return {
+    global_multiple: globalMultiple,
+    global_live_count: live.length,
+    min_live: model.calibration_min_live,
+    floor: model.calibration_floor,
+    cap: model.calibration_cap,
+    by_category: rows,
+  };
+}
+
+/** One protocol's calibrated base multiple and where it came from. */
+export function baseMultipleFor(category: string | null, calibration: Calibration): { multiple: number; source: string } {
+  const row = calibration.by_category.find((r) => r.category === (category ?? 'n/a'));
+  if (row !== undefined) return { multiple: row.multiple, source: `${row.category} median, ${row.live_count} live` };
+  return { multiple: calibration.global_multiple, source: 'whole-market median' };
+}
+
 /** The four multipliers and the implied value one protocol gets under `model`. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
-): { implied: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+  calibration: Calibration,
+): { implied: number; baseMultiple: number; baseSource: string; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
@@ -198,9 +294,10 @@ export function impliedValue(
     (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const extraChains = Math.max(0, protocol.chains.length - 1);
   const breadthMult = 1 + model.breadth_step * Math.min(extraChains, model.breadth_max_steps);
-  const base = protocol.tvl_usd * model.base_multiple;
+  const { multiple, source } = baseMultipleFor(protocol.category, calibration);
+  const base = protocol.tvl_usd * multiple * model.market_scale;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult * breadthMult));
-  return { implied, growthPct, growthMult, maturityMult, breadthMult, age };
+  return { implied, baseMultiple: multiple, baseSource: source, growthPct, growthMult, maturityMult, breadthMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -261,8 +358,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     if (!chosen.has(p.slug) && isCandidate(p)) chosen.set(p.slug, p);
   }
 
+  const calibration = calibrateMultiples(snapshot, model);
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model);
+    const v = impliedValue(p, snapshot.as_of, model, calibration);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -282,7 +380,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
-      base_multiple: model.base_multiple,
+      base_multiple: s.baseMultiple,
+      base_source: s.baseSource,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -324,7 +423,21 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** The category's one action, in the words a farmer can follow. */
+/** The weekly action that keeps a position alive, in the words of its own category. */
+function weeklyActionFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Once a week, repay a small slice of the loan on ${name} and borrow it back, so the position shows fresh activity.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('farm')) return `Once a week, swap a small amount through the main pool on ${name} or add a little liquidity, so the position shows fresh activity.`;
+  if (c.includes('perpetual') || c.includes('derivative')) return `Once a week, close the hedged trade on ${name} and open a fresh one of the same size.`;
+  if (c.includes('prediction')) return `Once a week, take one small position on a new ${name} market.`;
+  if (c.includes('curator') || c.includes('allocator')) return `Once a week, check the vault's allocation on ${name} and add a small top-up when the mix changes.`;
+  if (c.includes('stable')) return `Once a week, mint or redeem a small amount of the stable asset through ${name}.`;
+  if (c.includes('rwa')) return `Once a week, check the asset's yield accrual on ${name} and claim any distributions.`;
+  if (c.includes('restak') || c.includes('staking')) return `Once a week, check the staking rewards on ${name} and restake what has accrued.`;
+  if (c.includes('bridge')) return `Once a week, bridge a small amount through ${name} and use the funds inside its app.`;
+  return `Do one real action every week on ${name}, such as a deposit, a swap, a borrow or a vote.`;
+}
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
   const name = p.name;
@@ -363,7 +476,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '15 minutes to set up',
     },
     {
-      text: `Do one real action every week on ${p.name}, such as a deposit, a swap, a borrow or a vote.`,
+      text: weeklyActionFor(p),
       cost: 'about $2 of gas a week',
       time: '10 minutes a week',
     },
@@ -385,10 +498,12 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   ];
 }
 
-/** The live-token protocols, by market cap, for the dashboard's "already trading" view. */
+/** The live-token protocols, by market cap, for the dashboard's "already trading" view.
+ *  Bridges are left out: a bridge's market cap is the bridged asset's (MNT, POL), not a token
+ *  the bridge itself issued, so it is not the market's value for the bridge. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
-    .filter((p) => !isPreToken(p) && p.category !== 'CEX')
+    .filter((p) => !isPreToken(p) && p.category !== 'CEX' && !BRIDGE_CATEGORIES.has(p.category ?? ''))
     .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || b.tvl_usd - a.tvl_usd)
     .slice(0, LIVE_ROWS)
     .map((p) => ({
@@ -416,6 +531,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    base_multiple: row.model.base_multiple,
+    base_source: row.model.base_source,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     breadth_multiplier: row.model.breadth_multiplier,
@@ -434,6 +551,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model,
     model_version: MODEL_VERSION,
+    calibration: calibrateMultiples(snapshot, model),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     live_size: live.length,

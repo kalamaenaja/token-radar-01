@@ -23,11 +23,12 @@
 <section class="panel" aria-label="Model">
   <h2>How the model works <span class="ver" id="model-ver"></span></h2>
   <p class="model-line" id="model-line"></p>
+  <div class="calib" id="calibration" aria-label="Base multiple calibration"></div>
   <div class="sandbox">
     <div class="slider">
-      <label for="s-base">Base multiple <b id="v-base"></b></label>
-      <input type="range" id="s-base" min="0.1" max="0.5" step="0.01" value="0.3">
-      <span>TVL &times; base</span>
+      <label for="s-scale">Market scale <b id="v-scale"></b></label>
+      <input type="range" id="s-scale" min="0.5" max="2" step="0.05" value="1">
+      <span>scales every category multiple at once</span>
     </div>
     <div class="slider">
       <label for="s-growth">Growth weight <b id="v-growth"></b></label>
@@ -88,11 +89,11 @@
 
 <section class="panel" aria-label="Already trading">
   <h2>Already trading &mdash; not ranked</h2>
-  <p class="note">These protocols already have a token, so the board shows the market&rsquo;s own value for them instead of a model&rsquo;s. A token that trades cannot be a launch that has not happened yet.</p>
+  <p class="note">These protocols already have a token, so the board shows the market&rsquo;s own value for them instead of a model&rsquo;s. A token that trades cannot be a launch that has not happened yet. Bridges are left out: a bridge&rsquo;s market cap is the bridged asset&rsquo;s, not a token the bridge issued.</p>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">7d</th></tr>
+        <tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">MCAP/TVL</th><th class="num">7d</th></tr>
       </thead>
       <tbody id="live-rows"></tbody>
     </table>

@@ -21,14 +21,15 @@ function pct(v) {
   return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
 }
 
-/** The implied value of one row under a model: the same function as lib/model.ts. */
+/** The implied value of one row under a model: the same function as lib/model.ts.
+ *  The row carries its own calibrated base multiple; the sandbox's market scale multiplies it. */
 function implied(row, m, days) {
   const growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null ? 0 : row.change_7d));
   const gMult = 1 + (growth / 100) * m.growth_weight;
   const age = row.age_days === null ? m.unknown_age_days : row.age_days;
   const mMult = m.maturity_floor + (Math.min(Math.max(age, 0), days) / days) * m.maturity_range;
   const bMult = 1 + m.breadth_step * Math.min(Math.max(row.chains.length - 1, 0), m.breadth_max_steps);
-  return { value: Math.max(1, Math.round(row.tvl_usd * m.base_multiple * gMult * mMult * bMult)), gMult, mMult, bMult, growth };
+  return { value: Math.max(1, Math.round(row.tvl_usd * row.base_multiple * m.market_scale * gMult * mMult * bMult)), gMult, mMult, bMult, growth };
 }
 
 // Rows carry watch: true when their slug is on the snapshot's own watchlist.
@@ -71,7 +72,16 @@ function renderMeta() {
     esc(D.rows.length) + ' candidates &middot; source: ' + esc(D.source.replace(/^DefiLlama /, ''));
   $('model-ver').textContent = '(' + esc(D.model_version) + ')';
   $('model-line').textContent =
-    'implied = TVL x ' + D.model.base_multiple + ' x (1 + clamp(7d, ' + D.model.growth_floor + '%, ' + D.model.growth_cap + '%) / 100 x ' + D.model.growth_weight + ') x maturity(age) x breadth(chains)';
+    'implied = TVL x category multiple x (1 + clamp(7d, ' + D.model.growth_floor + '%, ' + D.model.growth_cap + '%) / 100 x ' + D.model.growth_weight + ') x maturity(age) x breadth(chains)';
+  const cal = D.calibration;
+  $('calibration').innerHTML =
+    '<p class="cal-note">Base multiple by category: the median market-cap/TVL of the ' + cal.global_live_count +
+    ' live protocols in this snapshot. A category counts once it has ' + cal.min_live +
+    ' live protocols; the rest use the whole-market median x' + cal.global_multiple.toFixed(3) +
+    '. Multiples are clamped to ' + cal.floor + '&ndash;' + cal.cap + ', so one outlier cannot set one.</p>' +
+    cal.by_category.map((c) =>
+      '<span class="chip"><b>' + esc(c.category) + '</b> x' + c.multiple.toFixed(3) + ' <i>(' + c.live_count + ' live)</i></span>').join('') +
+    '<span class="chip"><b>All other categories</b> x' + cal.global_multiple.toFixed(3) + ' <i>(whole-market median)</i></span>';
   const growths = D.rows.map((r) => r.change_7d).filter((v) => v !== null).sort((a, b) => a - b);
   const med = growths.length ? growths[Math.floor(growths.length / 2)] : 0;
   $('stats').innerHTML =
@@ -143,7 +153,7 @@ function openDetail(slug) {
   if (!r) return;
   selected = slug;
   const v = implied(r, model, days);
-  const base = r.tvl_usd * model.base_multiple;
+  const base = r.tvl_usd * r.base_multiple * model.market_scale;
   const el = $('detail');
   el.hidden = false;
   el.innerHTML =
@@ -156,7 +166,7 @@ function openDetail(slug) {
     '<span>Listed <b>' + esc(r.listed_at || 'n/a') + '</b> (' + (r.age_days === null ? 'age unknown' : r.age_days + ' days') + ')</span>' +
     '<span>Token <b>none recorded</b></span></div>' +
     '<div class="break">' +
-    '<div class="cell"><div class="k">Base (TVL &times; ' + model.base_multiple + ')</div><div class="v">' + money(base) + '</div><div class="bar-wrap"><i style="width:100%"></i></div></div>' +
+    '<div class="cell"><div class="k">Base (TVL &times; ' + r.base_multiple.toFixed(3) + ' &middot; ' + esc(r.base_source) + ')' + (model.market_scale !== 1 ? ' &times; scale ' + model.market_scale.toFixed(2) : '') + '</div><div class="v">' + money(base) + '</div><div class="bar-wrap"><i style="width:100%"></i></div></div>' +
     '<div class="cell"><div class="k">Growth &times;' + v.gMult.toFixed(2) + ' (' + pct(v.growth) + ' clamped)</div><div class="v">' + money(base * v.gMult) + '</div><div class="bar-wrap"><i style="width:' + Math.min(100, Math.max(4, v.gMult * 55)) + '%"></i></div></div>' +
     '<div class="cell"><div class="k">Maturity &times;' + v.mMult.toFixed(2) + '</div><div class="v">' + money(base * v.gMult * v.mMult) + '</div><div class="bar-wrap"><i style="width:' + Math.round(v.mMult * 100) + '%"></i></div></div>' +
     '<div class="cell"><div class="k">Implied value</div><div class="v">' + money(v.value) + '</div><div class="bar-wrap"><i style="width:100%;background:var(--green)"></i></div></div>' +
@@ -176,15 +186,16 @@ function renderLive() {
     '<td>' + esc(p.category || 'n/a') + '</td>' +
     '<td class="num">' + money(p.tvl_usd) + '</td>' +
     '<td class="num">' + (p.mcap_usd === null ? 'n/a' : money(p.mcap_usd)) + '</td>' +
+    '<td class="num">' + (p.mcap_usd === null || p.tvl_usd === 0 ? 'n/a' : (p.mcap_usd / p.tvl_usd).toFixed(2) + 'x') + '</td>' +
     '<td class="num ' + (p.change_7d === null ? '' : p.change_7d >= 0 ? 'pos' : 'neg') + '">' + pct(p.change_7d) + '</td></tr>'
   ).join('');
 }
 
 function syncSliders() {
-  $('s-base').value = model.base_multiple;
+  $('s-scale').value = model.market_scale;
   $('s-growth').value = model.growth_weight;
   $('s-days').value = days;
-  $('v-base').textContent = 'x' + model.base_multiple.toFixed(2);
+  $('v-scale').textContent = 'x' + model.market_scale.toFixed(2);
   $('v-growth').textContent = 'x' + model.growth_weight.toFixed(2);
   $('v-days').textContent = days + 'd';
 }
@@ -203,7 +214,7 @@ function init() {
   ['q', 'f-cat', 'f-chain', 'f-tvl', 'f-watch', 'f-sort'].forEach((id) => {
     $(id).addEventListener('input', () => { renderBoard(); persist(); });
   });
-  $('s-base').addEventListener('input', () => { model.base_multiple = Number($('s-base').value); syncSliders(); renderBoard(); });
+  $('s-scale').addEventListener('input', () => { model.market_scale = Number($('s-scale').value); syncSliders(); renderBoard(); });
   $('s-growth').addEventListener('input', () => { model.growth_weight = Number($('s-growth').value); syncSliders(); renderBoard(); });
   $('s-days').addEventListener('input', () => { days = Number($('s-days').value); syncSliders(); renderBoard(); });
   $('reset-model').addEventListener('click', () => { model = { ...D.model }; days = D.model.maturity_days; syncSliders(); renderBoard(); });

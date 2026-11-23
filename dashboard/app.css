@@ -61,6 +61,14 @@ h1 { margin: 0; font-size: 30px; letter-spacing: 3px; color: var(--green); }
 h2 { margin: 0 0 8px; font-size: 19px; }
 .ver { color: var(--cyan); font-size: 13px; font-weight: 600; }
 .model-line { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: nowrap; }
+.calib { margin-top: 10px; }
+.cal-note { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+.chip {
+  display: inline-block; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 9px; margin: 0 6px 6px 0; font-size: 13px; color: var(--muted);
+}
+.chip b { color: var(--text); }
+.chip i { font-style: normal; color: var(--cyan); }
 .sandbox { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 16px; align-items: end; margin-top: 12px; }
 .slider label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .slider label b { color: var(--text); }
