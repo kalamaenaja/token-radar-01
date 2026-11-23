@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar: pre-token protocols ranked by implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="pulse" aria-hidden="true"></span>
+    <div>
+      <h1>TOKEN RADAR</h1>
+      <p class="tag">Pre-token protocols, ranked by what their token would be worth</p>
+    </div>
+  </div>
+  <div class="meta" id="meta"></div>
+</header>
+
+<section class="stats" id="stats" aria-label="Board summary"></section>
+
+<section class="panel" aria-label="Model">
+  <h2>How the model works <span class="ver" id="model-ver"></span></h2>
+  <p class="model-line" id="model-line"></p>
+  <div class="sandbox">
+    <div class="slider">
+      <label for="s-base">Base multiple <b id="v-base"></b></label>
+      <input type="range" id="s-base" min="0.1" max="0.5" step="0.01" value="0.3">
+      <span>TVL &times; base</span>
+    </div>
+    <div class="slider">
+      <label for="s-growth">Growth weight <b id="v-growth"></b></label>
+      <input type="range" id="s-growth" min="0" max="1" step="0.05" value="0.6">
+      <span>7-day TVL change, clamped &minus;80% to +150%</span>
+    </div>
+    <div class="slider">
+      <label for="s-days">Maturity window <b id="v-days"></b></label>
+      <input type="range" id="s-days" min="365" max="2920" step="365" value="1460">
+      <span>days listed with no token, capped</span>
+    </div>
+    <button id="reset-model" type="button">Reset model</button>
+  </div>
+  <p class="note">Move a slider and the board re-ranks live: the value is a function of the snapshot, never a fixed list. Wrapped, staked and bridged products of tokens that already trade are never ranked, however large their TVL.</p>
+</section>
+
+<section class="panel" aria-label="Board controls">
+  <div class="controls">
+    <label>Search <input type="search" id="q" placeholder="name or slug"></label>
+    <label>Category <select id="f-cat"></select></label>
+    <label>Chain <select id="f-chain"></select></label>
+    <label>Min TVL
+      <select id="f-tvl">
+        <option value="0">Any</option>
+        <option value="5000000">$5M+</option>
+        <option value="50000000">$50M+ (watchlist floor)</option>
+        <option value="100000000">$100M+</option>
+        <option value="1000000000">$1B+</option>
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" id="f-watch"> Watchlist only</label>
+    <label>Sort
+      <select id="f-sort">
+        <option value="rank">Rank (implied value)</option>
+        <option value="tvl">TVL</option>
+        <option value="growth">7-day growth</option>
+        <option value="age">Age (days listed)</option>
+      </select>
+    </label>
+  </div>
+  <p class="count" id="count"></p>
+  <div class="table-wrap">
+    <table id="board">
+      <thead>
+        <tr>
+          <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+          <th class="num">TVL</th><th class="num">7d</th><th class="num">Age</th>
+          <th class="num">Implied value</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="hint">Click a row to open its detail view and farm plan.</p>
+</section>
+
+<section class="panel detail" id="detail" aria-label="Protocol detail" hidden></section>
+
+<section class="panel" aria-label="Already trading">
+  <h2>Already trading &mdash; not ranked</h2>
+  <p class="note">These protocols already have a token, so the board shows the market&rsquo;s own value for them instead of a model&rsquo;s. A token that trades cannot be a launch that has not happened yet.</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">7d</th></tr>
+      </thead>
+      <tbody id="live-rows"></tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <p id="foot"></p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
